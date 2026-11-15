@@ -1,68 +1,186 @@
+
 import numpy as np
 from cffi import FFI
+
 ffi = FFI()
 
-#set globals
-kp = 0.05 #pivot scale in Mpc^-1
-em_step = 1e-5 #step-size for SDE solver after Q > 10^4
-Nrealz = int(2048) #number of realizations over which to average, higher number leads to more compute time
-kmax = 2.0 #in log10 -> actual kmax used internally is 10^kmax
-kmin = -6.0 #in log10
-points_k = int(50) #number of points to be calculated between the k values specified
-Np_autocalc = int(1) # can be set to either 1 (for internal automatic calculation of N_pivot) or 0 (specify an N_pivot value) | in both cases a value for the Np parameter needs to be passed.
-verbosity = int(1) #can be set to either 1 or 0, when set to 1 the error messages will be printed if encountered any.
-want_FP = int(1) #Enable Fokker-Planck
-wi2easy = int(0) #Enable (1) or disable (0) wi2easy like treatment of quantum-noise
 
-#python script parameters
+# ============================================================
+# 1. Numerical settings
+# ============================================================
+
+kp = 0.05
+
+em_step = 1e-5
+Nrealz = 2048
+
+kmax = 2.0
+kmin = -6.0
+points_k = 50
+
+Np_autocalc = 1
+verbosity = 1
+
+# Deterministic perturbation solver
+want_FP = 1
+
+# WI2easy-compatible quantum prescription
+wi2easy = 1
+
+
+# ============================================================
+# 2. Output settings
+# ============================================================
+
 write_bg = True
+
 fname_bg = "bg.dat"
 fname_ps = "ps.dat"
 
-#set model parameters (remember to specify the model in model_calc.cpp file):
 
-#fixed parameters:
+# ============================================================
+# 3. Rudnei model parameters
+# ============================================================
+
+# Radiation degrees of freedom
+# SM particles only: 106.75
+# SM particles + thermalized inflaton: 107.75
+
+therm = 0
+gst = 106.75
+
+# Inflationary parameters
+# IMPORTANT: These values are provisional.
+# They must be replaced by the parameters selected
+# to reproduce the reference model.
+
 V0 = 2.05237e-15
-gst = 538.664
+
 Q0 = 0.311553
 phi0 = 23.6895
+
 Np = 1.0
-therm = int(0)
-rad_noise = int(0)
 
-#Upsilon parameters:
-p = int(3)
-c = int(0)
+# Radiation perturbation noise
+rad_noise = 0
 
+
+# ============================================================
+# 4. Legacy interface parameters
+# ============================================================
+
+# These parameters are retained only because the
+# current C++ model() interface requires them.
+#
+# They are NOT used to define Rudnei's dissipation.
+
+p = 3
+c = 0
+
+
+# ============================================================
+# 5. Run
+# ============================================================
 
 if __name__ == "__main__":
-    #Open C++ library
+
     lib_pert = ffi.dlopen("../libmodel.so")
-    #Modify this according to the model_calc.cpp "model" function signature (copy-paste the arguments of "void model" in model_calc.cpp). Nothing else needs to be modified here.
-    ffi.cdef("void model (double phi_ini,double gst,double Q_ini,double V0,double Np,int p,int c,int therm,int rad_noise) ; void set_globals (double kpivot, double Em_h, int N_realizations, double kmax, double kmin, int points_bw_k, int Np_calc, int verbosity,int FP_approach, int want_wi2easy);int get_npts ();double* get_klist();double* get_Plist();void clear_P();void clear_k();void write_Bg(const char* fname); extern double PT_kp;",override=True)
-    
-    #Set global parameters:
-    lib_pert.set_globals(kp,em_step,Nrealz,kmax,kmin,points_k,Np_autocalc,verbosity,want_FP,wi2easy)
-    
-    #pass model paramters | match the function signature
-    lib_pert.model(phi0,gst,Q0,V0,Np,p,c,therm,rad_noise)
-    
-    if (write_bg == True):
-        lib_pert.write_Bg(fname_bg.encode('utf-8'))
-    
+
+    ffi.cdef("""
+        void model (
+            double phi_ini,
+            double gst,
+            double Q_ini,
+            double V0,
+            double Np,
+            int p,
+            int c,
+            int therm,
+            int rad_noise
+        );
+
+        void set_globals (
+            double kpivot,
+            double Em_h,
+            int N_realizations,
+            double kmax,
+            double kmin,
+            int points_bw_k,
+            int Np_calc,
+            int verbosity,
+            int FP_approach,
+            int want_wi2easy
+        );
+
+        int get_npts();
+
+        double* get_klist();
+        double* get_Plist();
+
+        void clear_P();
+        void clear_k();
+
+        void write_Bg(const char* fname);
+
+        extern double PT_kp;
+    """, override=True)
+
+
+    # Configure solver
+    lib_pert.set_globals(
+        kp,
+        em_step,
+        Nrealz,
+        kmax,
+        kmin,
+        points_k,
+        Np_autocalc,
+        verbosity,
+        want_FP,
+        wi2easy
+    )
+
+
+    # Run model
+    lib_pert.model(
+        phi0,
+        gst,
+        Q0,
+        V0,
+        Np,
+        p,
+        c,
+        therm,
+        rad_noise
+    )
+
+
+    # Save background
+    if write_bg:
+        lib_pert.write_Bg(fname_bg.encode("utf-8"))
+
+
+    # Retrieve numerical spectrum
     npts = lib_pert.get_npts()
+
     Pptr = lib_pert.get_Plist()
     kptr = lib_pert.get_klist()
-    Plist = ffi.unpack(Pptr,npts)
-    klist = ffi.unpack(kptr,npts)
 
+    Plist = ffi.unpack(Pptr, npts)
+    klist = ffi.unpack(kptr, npts)
+
+
+    # Tensor power spectrum
     PT = lib_pert.PT_kp
-    #Write the tensor power spectrum amplitude to calculate r
-    with open("PT_kp.dat","w") as f_pt:
+
+    with open("PT_kp.dat", "w") as f_pt:
         f_pt.write(str(PT))
-    
-    #write raw power spectrum data to file
+
+
+    # Save scalar power spectrum
     with open(fname_ps, "w") as f_ps:
-        f_ps.write("k (in Mpc^-1), P(k)\n") #header
-        for i,j in zip(klist,Plist):
-            f_ps.write(str(i)+","+str(j)+"\n")
+
+        f_ps.write("k (in Mpc^-1), P(k)\n")
+
+        for k, P in zip(klist, Plist):
+            f_ps.write(f"{k},{P}\n")
